@@ -1,90 +1,128 @@
 require("dotenv").config();
+
 const express = require("express");
-const app = express();
-const port = process.env.PORT || 3000;
 const path = require("path");
 const bcrypt = require("bcryptjs");
-const auth = require('./auth');
 const { MongoClient } = require("mongodb");
+const auth = require("./auth");
 
-const url = process.env.MONGODB_URI;
-const client = new MongoClient(url);
-const dbname = "user_info";
+const app = express();
+const port = process.env.PORT || 3000;
+console.log("🔥 Server file started...");
+const uri = process.env.MONGODB_URI;
 
-//middleware
+if (!uri) {
+  console.error("❌ ERROR: MONGODB_URI is missing in .env file!");
+  process.exit(1);
+}
+
+let cachedClient = null;
+
+async function getDB() {
+  if (!cachedClient) {
+    try {
+      console.log("⏳ Connecting to MongoDB...");
+      const client = new MongoClient(uri);
+      cachedClient = await client.connect();
+      console.log("✅ MongoDB Connected Successfully");
+    } catch (err) {
+      console.error("❌ MongoDB Connection Failed:", err);
+      throw err;
+    }
+  }
+  return cachedClient.db("user_info");
+}
+
+/*******************************
+ * MIDDLEWARE
+ *******************************/
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+
+// Static files
 app.use(express.static(path.join(__dirname, "public")));
 
+/*******************************
+ * PAGES
+ *******************************/
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "/views/login.html"));
+  res.sendFile(path.join(__dirname, "views/login.html"));
 });
+
 app.get("/register", (req, res) => {
-  res.sendFile(path.join(__dirname, "/views/reg.html"));
+  res.sendFile(path.join(__dirname, "views/reg.html"));
 });
+
 app.get("/mytracker", (req, res) => {
-  res.sendFile(path.join(__dirname, "/views/track.html"));
+  res.sendFile(path.join(__dirname, "views/track.html"));
 });
 
-//register user
+/*******************************
+ * REGISTER ROUTE
+ *******************************/
 app.post("/register", async (req, res) => {
-  const { name, email, password, confirmPassword } = req.body;
   try {
-    // In serverless, we should check if connected or use a cached connection pattern
-    // For now, retaining original logic but adding error handling for connection
-    await client.connect();
-    const db = client.db(dbname);
-    const col = db.collection("information");
-    const existing = await col.findOne({ email });
+    const { name, email, password, confirmPassword } = req.body;
+
+    if (!name || !email || !password) {
+      return res.send("All fields required");
+    }
+
+    if (password !== confirmPassword) {
+      return res.send("Password not matching");
+    }
+
+    const db = await getDB();
+    const users = db.collection("information");
+
+    const existing = await users.findOne({ email });
     if (existing) {
-      return res.send("email is already existing");
+      return res.send("Email already exists");
     }
-    else if (password !== confirmPassword) {
-      return res.send("password not matching");
-    }
+
     const hash = await bcrypt.hash(password, 10);
-    const insert = await col.insertOne({ name, email, password: hash });
-    if (insert) {
-      res.status(200).sendFile(path.join(__dirname, "/views/login.html"));
-    }
+    await users.insertOne({ name, email, password: hash });
+
+    res.sendFile(path.join(__dirname, "views/login.html"));
   } catch (err) {
-    console.error(err);
+    console.error("Register Error:", err);
     res.status(500).send("Internal Server Error");
   }
 });
-//login user
-app.post('/login', async (req, res) => {
-  const { email, password } = req.body;
+
+/*******************************
+ * LOGIN ROUTE
+ *******************************/
+app.post("/login", async (req, res) => {
   try {
-    await client.connect();
-    const db = client.db(dbname);
-    const col = db.collection('information');
-    const user = await col.findOne({ email });
+    const { email, password } = req.body;
 
-    if (!user) {
-      return res.send('invalid email or password');
-    }
-    const ismatch = await bcrypt.compare(password, user.password);
-    if (ismatch && user) {
-      res.status(200).sendFile(path.join(__dirname, '/views/share.html'));
-    }
-    else {
-      res.send('invalid email or password');
-    }
+    const db = await getDB();
+    const users = db.collection("information");
 
+    const user = await users.findOne({ email });
+    if (!user) return res.send("Invalid email or password");
+
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.send("Invalid email or password");
+
+    res.sendFile(path.join(__dirname, "views/share.html"));
   } catch (err) {
-    console.error(err);
+    console.error("Login Error:", err);
     res.status(500).send("Internal Server Error");
   }
-})
+});
 
-app.use('/', auth);
+/*******************************
+ * SOCIAL AUTH ROUTES
+ *******************************/
+app.use(auth);
 
-// Only listen if not running in Vercel (Vercel exports the app)
-if (require.main === module) {
-  app.listen(port, () => {
-    console.log(`Server is running on http://localhost:${port}`);
-  });
-}
+/*******************************
+ * START SERVER
+ *******************************/
+// app.listen(port, () => {
+//   console.log(`🚀 Server running on http://localhost:${port}`);
+// });
 
 module.exports = app;
